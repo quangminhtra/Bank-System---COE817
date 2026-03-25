@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project name="BankSecureSystem" default="default" basedir=".">
+    <description>NetBeans Ant project for the COE 817 secure banking system.</description>
+
+    <property file="nbproject/project.properties"/>
+    <property name="build.dir" value="build"/>
+    <property name="build.classes.dir" value="${build.dir}/classes"/>
+    <property name="dist.dir" value="dist"/>
+    <property name="dist.jar" value="${dist.dir}/${application.title}.jar"/>
+    <property name="main.class" value="${main.class}"/>
+
+    <target name="default" depends="jar"/>
+
+    <target name="init">
+        <mkdir dir="${build.classes.dir}"/>
+        <mkdir dir="${dist.dir}"/>
+    </target>
+
+    <target name="compile" depends="init">
+        <javac srcdir="${src.dir}"
+               destdir="${build.classes.dir}"
+               includeantruntime="false"
+               debug="true"
+               source="${javac.source}"
+               target="${javac.target}">
+            <compilerarg value="-Xlint:unchecked"/>
+        </javac>
+        <copy todir="${build.classes.dir}">
+            <fileset dir="${src.dir}" excludes="**/*.java"/>
+        </copy>
+    </target>
+
+    <target name="jar" depends="compile">
+        <jar jarfile="${dist.jar}" basedir="${build.classes.dir}">
+            <manifest>
+                <attribute name="Main-Class" value="${main.class}"/>
+            </manifest>
+        </jar>
+    </target>
+
+    <target name="run" depends="jar">
+        <java jar="${dist.jar}" fork="true"/>
+    </target>
+
+    <target name="clean">
+        <delete dir="${build.dir}"/>
+        <delete dir="${dist.dir}"/>
+    </target>
+</project>

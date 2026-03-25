@@ -1,0 +1,2 @@
+Manifest-Version: 1.0
+X-COMMENT: Main-Class is added automatically by the Ant build.
