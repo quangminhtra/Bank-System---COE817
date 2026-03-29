@@ -45,7 +45,7 @@ public class BankServer {
         Thread acceptThread = new Thread(() -> {
             try (ServerSocket serverSocket = new ServerSocket(port)) {
                 log("Bank server listening on port " + port);
-                log("Server public key distributed to ATM clients at connection time.");
+                log("Server using preshared keys");
                 while (running) {
                     Socket socket = serverSocket.accept();
                     log("Connection received from " + socket.getRemoteSocketAddress());

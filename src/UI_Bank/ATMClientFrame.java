@@ -92,6 +92,7 @@ public class ATMClientFrame extends JFrame {
         outputArea.setEditable(false);
         add(new JScrollPane(outputArea), BorderLayout.SOUTH);
         outputArea.setRows(15);
+        log("Got shared key: " + CryptoUtils.b64(this.preshared.getEncoded()));
     }
 
     private void safeRun(Action action) {
@@ -130,6 +131,7 @@ public class ATMClientFrame extends JFrame {
         p.setProperty("password", new String(passwordField.getPassword()));
         byte[] cipher = CryptoUtils.aesGcmEncrypt(preshared, CryptoUtils.bytes(KvMessage.encode(p)));
         out.println("REGISTER|" + CryptoUtils.b64(cipher));
+        log("Sent register cipher: " + CryptoUtils.b64(cipher));
         String response = in.readLine();
         log("Register response: " + response);
     }
@@ -139,20 +141,19 @@ public class ATMClientFrame extends JFrame {
         String username = usernameField.getText().trim();
         String password = new String(passwordField.getPassword());
         out.println("LOGIN_INIT|" + username);
+        log("Loggin in as: " + username);
         String challenge = in.readLine();
         String[] parts = challenge.split("\\|", -1);
         if (!"LOGIN_CHALLENGE".equals(parts[0]) || !"OK".equals(parts[1])) {
             log("Login failed before authentication: " + challenge);
             return;
         }
-
-        byte[] salt = CryptoUtils.unb64(parts[2]);
-        int iterations = Integer.parseInt(parts[3]);
-        String nonceS = parts[4];
-
-        //using user password to create a shared secret key
-        byte[] psk = CryptoUtils.pbkdf2(password.toCharArray(), salt, iterations, 32);
-        SecretKey pskKey = CryptoUtils.aesKeyFromBytes(psk);
+        
+        String loginChallengeOk = CryptoUtils.utf8(CryptoUtils.aesGcmDecrypt(preshared, CryptoUtils.unb64(parts[2])));
+        String[] loginOkParts = loginChallengeOk.split("\\|", -1);
+        byte[] salt = CryptoUtils.unb64(loginOkParts[0]);
+        int iterations = Integer.parseInt(loginOkParts[1]);
+        String nonceS = loginOkParts[2];
 
         String nonceC = CryptoUtils.b64(CryptoUtils.randomBytes(16));
         byte[] clientRandom = CryptoUtils.randomBytes(32);
@@ -163,8 +164,10 @@ public class ATMClientFrame extends JFrame {
         auth1.setProperty("nonceC", nonceC);
         auth1.setProperty("clientRandom", CryptoUtils.b64(clientRandom));
         auth1.setProperty("username", username);
-        byte[] authCipher = CryptoUtils.aesGcmEncrypt(pskKey, CryptoUtils.bytes(KvMessage.encode(auth1)));
-        out.println("AUTH1|" + username + "|" + CryptoUtils.b64(authCipher));
+        auth1.setProperty("pswd", CryptoUtils.b64(CryptoUtils.pbkdf2(password.toCharArray(), salt, iterations, 32)));
+        log("Going to send psk: " + auth1.get("pswd"));
+        byte[] authCipher = CryptoUtils.aesGcmEncrypt(preshared, CryptoUtils.bytes(KvMessage.encode(auth1)));
+        out.println("AUTH1|" + CryptoUtils.b64(authCipher));
         //check if the server verified the customer
         String authOk = in.readLine();
         String[] authParts = authOk.split("\\|", -1);
@@ -172,15 +175,16 @@ public class ATMClientFrame extends JFrame {
             log("Authentication failed: " + authOk);
             return;
         }
+
         //now atm must verify the server
-        String decrypted = CryptoUtils.utf8(CryptoUtils.aesGcmDecrypt(pskKey, CryptoUtils.unb64(authParts[1])));
+        String decrypted = CryptoUtils.utf8(CryptoUtils.aesGcmDecrypt(preshared, CryptoUtils.unb64(authParts[1])));
         Properties auth2 = KvMessage.decode(decrypted);
         //double check server nonce
         if (!(nonceC.equals(auth2.getProperty("nonceC")) && nonceS.equals(auth2.getProperty("nonceS")))) {
             throw new IllegalStateException("Server authentication failed. NonceC mismatch.");
         }
         byte[] serverRandom = CryptoUtils.unb64(auth2.getProperty("serverRandom"));
-        byte[] masterSeed = CryptoUtils.hmacSha256(CryptoUtils.hmacKeyFromBytes(psk),
+        byte[] masterSeed = CryptoUtils.hmacSha256(CryptoUtils.hmacKeyFromBytes(preshared.getEncoded()),
                 CryptoUtils.bytes(username + "|" + nonceC + "|" + nonceS + "|" + CryptoUtils.b64(clientRandom) + "|" + CryptoUtils.b64(serverRandom)));
         encryptionKey = CryptoUtils.hkdfExpand(masterSeed, "BANK-ENC", 16);
         macKey = CryptoUtils.hmacKeyFromBytes(CryptoUtils.hkdfExpand(masterSeed, "BANK-MAC", 32).getEncoded());

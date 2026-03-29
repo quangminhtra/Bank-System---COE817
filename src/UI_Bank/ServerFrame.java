@@ -35,7 +35,7 @@ public class ServerFrame extends JFrame {
         startButton.addActionListener(e -> {
             try {
                 if (bankServer == null) {
-                    bankServer = new BankServer(BankServer.DEFAULT_PORT, this);
+                    bankServer = new BankServer(BankServer.DEFAULT_PORT, this, preKeys);
                 }
                 bankServer.start();
             } catch (Exception ex) {

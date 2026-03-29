@@ -1,13 +1,13 @@
 package UI_Bank;
 
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import javax.crypto.SecretKey;
 import javax.swing.SwingUtilities;
 import CryptoLogic.CryptoUtils;
 
 public class DemoLauncher {
     public static void main(String[] args) {
-        HashMap<String, SecretKey> preKeys = new HashMap<>();
+        ConcurrentHashMap<String, SecretKey> preKeys = new ConcurrentHashMap<>();
         try{
         preKeys.put("ATM-1", CryptoUtils.generateAESKey(CryptoUtils.keySize));
         preKeys.put("ATM-2", CryptoUtils.generateAESKey(CryptoUtils.keySize));
