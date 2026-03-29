@@ -1,25 +1,26 @@
 package Server_Client;
 
-import CryptoLogic.CryptoUtils;
 import Bank_model.TransactionResult;
 import Bank_model.UserRecord;
+import CryptoLogic.CryptoUtils;
 import CryptoLogic.KvMessage;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.Socket;
-import java.security.PublicKey;
 import java.util.Properties;
 import javax.crypto.SecretKey;
 
 public class ClientHandler implements Runnable {
     private final Socket socket;
     private final BankServer bankServer;
+    private SecretKey atmPreKey;
 
     public ClientHandler(Socket socket, BankServer bankServer) {
         this.socket = socket;
         this.bankServer = bankServer;
+        this.atmPreKey = null;
     }
 
     @Override
@@ -29,8 +30,7 @@ public class ClientHandler implements Runnable {
              PrintWriter out = new PrintWriter(new OutputStreamWriter(s.getOutputStream()), true)) {
 
             // Send server public key first --> the ATM use it for secure registration
-            out.println("SERVER_HELLO|" + CryptoUtils.encodePublicKey(bankServer.getRsaKeyPair().getPublic()));
-            PublicKey serverPublicKey = bankServer.getRsaKeyPair().getPublic();
+            out.println("SERVER_HELLO|");
 
             String atmId = "UNKNOWN-ATM";
             String line;
@@ -42,18 +42,20 @@ public class ClientHandler implements Runnable {
             while ((line = in.readLine()) != null) {
                 String[] parts = line.split("\\|", -1);
                 String type = parts[0];
-
+                
                 switch (type) {
                     case "ATM_HELLO" -> {
                         // Store ATM identity for logging and handshake tracking.
                         atmId = parts.length > 1 ? parts[1] : "UNKNOWN-ATM";
+                        this.atmPreKey = this.bankServer.getPreKey(atmId);
                         bankServer.log("ATM connected: " + atmId);
+                        this.bankServer.log("Got Client Key: " + CryptoUtils.b64(atmPreKey.getEncoded()));
                         out.println("ATM_HELLO_OK|" + atmId);
                     }
 
                     case "REGISTER" ->
                         // Registration uses RSA to protect username/password in transit
-                        handleRegister(parts, out, serverPublicKey, atmId);
+                        handleRegister(parts, out, atmId);
 
                     case "LOGIN_INIT" ->
                         // Start login by issuing salt, iteration count, and server nonce
@@ -82,24 +84,28 @@ public class ClientHandler implements Runnable {
             }
         } catch (Exception e) {
             bankServer.log("Client handler error: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
-    private void handleRegister(String[] parts, PrintWriter out, PublicKey serverPublicKey, String atmId) throws Exception {
+    private void handleRegister(String[] parts, PrintWriter out, String atmId) throws Exception {
         if (parts.length < 2) {
             out.println("REGISTER_RESULT|ERROR|Malformed registration.");
             return;
         }
 
         // Decrypt registration payload using Sever Pkey
+        bankServer.log("Got register cipher: " + parts[1]);
         String decrypted = CryptoUtils.utf8(
-                CryptoUtils.rsaDecrypt(bankServer.getRsaKeyPair().getPrivate(), CryptoUtils.unb64(parts[1]))
+            CryptoUtils.aesGcmDecrypt(atmPreKey, CryptoUtils.unb64(parts[1]))
         );
 
         // Decode username and password 
+        bankServer.log("Decrypted: " + decrypted);
         Properties p = KvMessage.decode(decrypted);
         String username = p.getProperty("username", "").trim();
         String password = p.getProperty("password", "");
+        bankServer.log("Trying to reg User: " + username + " Pass: " + password);
 
         // Store new user in users.db
         boolean ok = bankServer.getDatabase().register(username, password.toCharArray());
@@ -108,41 +114,54 @@ public class ClientHandler implements Runnable {
             bankServer.log("Registered new user '" + username + "' from " + atmId);
             out.println("REGISTER_RESULT|OK|Account created successfully.");
         } else {
+            bankServer.log("Registration Error");
             out.println("REGISTER_RESULT|ERROR|Registration failed. Username may already exist or input is empty.");
         }
     }
 
     private void handleLoginInit(String[] parts, PrintWriter out, String atmId) {
-        if (parts.length < 2) {
-            out.println("LOGIN_CHALLENGE|ERROR|Bad request");
-            return;
+        try{
+            bankServer.log("Parts: " + parts.length);
+            if (parts.length < 2) {
+                out.println("LOGIN_CHALLENGE|ERROR|Bad request");
+                return;
+            }
+
+            String username = parts[1].trim();
+            bankServer.log("User: " + username);
+            System.out.println("Going to login as: " + username);
+            UserRecord user = bankServer.getDatabase().getUser(username);
+
+
+            if (user == null) {
+                out.println("LOGIN_CHALLENGE|ERROR|Unknown user");
+                return;
+            }
+
+            // Generate a fresh server nonce for challenge-response authentication
+            String nonceS = CryptoUtils.b64(CryptoUtils.randomBytes(16));
+            PendingHandshakeStore.put(atmId + ":" + username, nonceS);
+            String login_ok_string = CryptoUtils.b64(user.getSalt()) + "|" + user.getIterations() + "|" + nonceS;
+            byte[] loginOkCipher = CryptoUtils.aesGcmEncrypt(atmPreKey, CryptoUtils.bytes(login_ok_string));
+            // Send salt, PBKDF2 iterations, and nonce to the ATM.
+            out.println("LOGIN_CHALLENGE|OK|" + CryptoUtils.b64(loginOkCipher));
+            bankServer.log("Login challenge issued for user '" + username + "' at " + atmId);
+        }catch(Exception e){
+            System.out.println("Error during login: " + e.getMessage());
         }
-
-        String username = parts[1].trim();
-        UserRecord user = bankServer.getDatabase().getUser(username);
-
-        
-        if (user == null) {
-            out.println("LOGIN_CHALLENGE|ERROR|Unknown user");
-            return;
-        }
-
-        // Generate a fresh server nonce for challenge-response authentication
-        String nonceS = CryptoUtils.b64(CryptoUtils.randomBytes(16));
-        PendingHandshakeStore.put(atmId + ":" + username, nonceS);
-
-        // Send salt, PBKDF2 iterations, and nonce to the ATM.
-        out.println("LOGIN_CHALLENGE|OK|" + CryptoUtils.b64(user.getSalt()) + "|" + user.getIterations() + "|" + nonceS);
-        bankServer.log("Login challenge issued for user '" + username + "' at " + atmId);
     }
 
     private ClientSession handleAuth1(String[] parts, PrintWriter out, String atmId) throws Exception {
-        if (parts.length < 3) {
+        if (parts.length < 2) {
             out.println("ERROR|Malformed AUTH1");
             return null;
         }
 
-        String username = parts[1].trim();
+        Properties auth1 = KvMessage.decode(
+            CryptoUtils.utf8(CryptoUtils.aesGcmDecrypt(atmPreKey, CryptoUtils.unb64(parts[1])))
+        );
+        String username = auth1.getProperty("username");
+        bankServer.log("Trying to login: " + username);
         UserRecord user = bankServer.getDatabase().getUser(username);
 
         if (user == null) {
@@ -150,14 +169,13 @@ public class ClientHandler implements Runnable {
             return null;
         }
 
-        // Rebuild the password-derived key stored for this user
-        SecretKey pskKey = CryptoUtils.aesKeyFromBytes(user.getPsk());
+        //password good? user good amen
+        if( !(auth1.getProperty("pswd").equals(CryptoUtils.b64(user.getPsk())))){
+            out.println("AUTH_RESULT|ERROR|bad password");
+            return null;
+        }
 
-        // Decrypt the client's authentication messages
-        String decrypted = CryptoUtils.utf8(CryptoUtils.aesGcmDecrypt(pskKey, CryptoUtils.unb64(parts[2])));
-        Properties p = KvMessage.decode(decrypted);
-
-        String nonceS = p.getProperty("nonceS", "");
+        String nonceS = auth1.getProperty("nonceS", "");
         String expectedNonceS = PendingHandshakeStore.get(atmId + ":" + username);
 
         // Verify server nonce to ensure freshness and correct challenge matching
@@ -166,8 +184,9 @@ public class ClientHandler implements Runnable {
             return null;
         }
 
-        String nonceC = p.getProperty("nonceC", "");
-        String clientRandomB64 = p.getProperty("clientRandom", "");
+        //We're all good now, the client has verified the server, let's verify the ATM
+        String nonceC = auth1.getProperty("nonceC", "");
+        String clientRandomB64 = auth1.getProperty("clientRandom", "");
         byte[] clientRandom = CryptoUtils.unb64(clientRandomB64);
 
         // Generate fresh randomness from the server side
@@ -175,7 +194,7 @@ public class ClientHandler implements Runnable {
 
         // Build a fresh master seed from both sides' values
         byte[] masterSeed = CryptoUtils.hmacSha256(
-                CryptoUtils.hmacKeyFromBytes(user.getPsk()),
+                CryptoUtils.hmacKeyFromBytes(atmPreKey.getEncoded()),
                 CryptoUtils.bytes(
                         username + "|" + nonceC + "|" + nonceS + "|" +
                         CryptoUtils.b64(clientRandom) + "|" + CryptoUtils.b64(serverRandom)
@@ -191,11 +210,12 @@ public class ClientHandler implements Runnable {
         // Send server proof back to the ATM
         Properties response = new Properties();
         response.setProperty("nonceC", nonceC);
+        response.setProperty("nonceS", nonceS);
         response.setProperty("serverRandom", CryptoUtils.b64(serverRandom));
         response.setProperty("message", "Authenticated");
 
         String responseText = KvMessage.encode(response);
-        out.println("AUTH_OK|" + CryptoUtils.b64(CryptoUtils.aesGcmEncrypt(pskKey, CryptoUtils.bytes(responseText))));
+        out.println("AUTH_OK|" + CryptoUtils.b64(CryptoUtils.aesGcmEncrypt(atmPreKey, CryptoUtils.bytes(responseText))));
 
         // Authentication finished, so clear pending handshake state
         PendingHandshakeStore.remove(atmId + ":" + username);

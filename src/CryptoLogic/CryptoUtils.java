@@ -23,6 +23,7 @@ import javax.crypto.spec.SecretKeySpec;
 
 public final class CryptoUtils {
     // Secure random generator used for keys, IVs, nonces, and random values
+    public static final int keySize = 128;
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private CryptoUtils() {}

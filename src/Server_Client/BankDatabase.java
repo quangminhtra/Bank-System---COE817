@@ -1,8 +1,8 @@
 package Server_Client;
 
-import CryptoLogic.CryptoUtils;
 import Bank_model.TransactionResult;
 import Bank_model.UserRecord;
+import CryptoLogic.CryptoUtils;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -38,6 +38,7 @@ public class BankDatabase {
     }
 
     public UserRecord getUser(String username) {
+        System.out.println("Grabbing user: " + username);
         return users.get(username);
     }
 
