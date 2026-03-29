@@ -9,7 +9,6 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.Socket;
-import java.security.PublicKey;
 import java.util.Properties;
 import javax.crypto.SecretKey;
 import javax.swing.JButton;
@@ -31,19 +30,21 @@ public class ATMClientFrame extends JFrame {
     private final JPasswordField passwordField = new JPasswordField();
     private final JTextField amountField = new JTextField();
     private final JTextArea outputArea = new JTextArea();
+    
 
     private Socket socket;
     private BufferedReader in;
     private PrintWriter out;
-    private PublicKey serverPublicKey;
+    private final SecretKey preshared;
     private SecretKey encryptionKey;
     private SecretKey macKey;
     private long clientSeq = 1;
     private String loggedInUser;
 
-    public ATMClientFrame(String atmId) {
+    public ATMClientFrame(String atmId, SecretKey preshared) {
         super("ATM Client - " + atmId);
         this.atmId = atmId;
+        this.preshared = preshared;
         buildUi();
     }
 
@@ -116,7 +117,6 @@ public class ATMClientFrame extends JFrame {
         if (!"SERVER_HELLO".equals(parts[0])) {
             throw new IllegalStateException("Unexpected server response: " + hello);
         }
-        serverPublicKey = CryptoUtils.decodePublicKey(parts[1]);
         out.println("ATM_HELLO|" + atmId);
         log("Connected to bank server.");
         log("Server public key received for secure registration.");
@@ -128,7 +128,7 @@ public class ATMClientFrame extends JFrame {
         Properties p = new Properties();
         p.setProperty("username", usernameField.getText().trim());
         p.setProperty("password", new String(passwordField.getPassword()));
-        byte[] cipher = CryptoUtils.rsaEncrypt(serverPublicKey, CryptoUtils.bytes(KvMessage.encode(p)));
+        byte[] cipher = CryptoUtils.aesGcmEncrypt(preshared, CryptoUtils.bytes(KvMessage.encode(p)));
         out.println("REGISTER|" + CryptoUtils.b64(cipher));
         String response = in.readLine();
         log("Register response: " + response);
@@ -149,28 +149,34 @@ public class ATMClientFrame extends JFrame {
         byte[] salt = CryptoUtils.unb64(parts[2]);
         int iterations = Integer.parseInt(parts[3]);
         String nonceS = parts[4];
+
+        //using user password to create a shared secret key
         byte[] psk = CryptoUtils.pbkdf2(password.toCharArray(), salt, iterations, 32);
         SecretKey pskKey = CryptoUtils.aesKeyFromBytes(psk);
 
         String nonceC = CryptoUtils.b64(CryptoUtils.randomBytes(16));
         byte[] clientRandom = CryptoUtils.randomBytes(32);
         Properties auth1 = new Properties();
+
+        //build client's auth message, include the server's nonce
         auth1.setProperty("nonceS", nonceS);
         auth1.setProperty("nonceC", nonceC);
         auth1.setProperty("clientRandom", CryptoUtils.b64(clientRandom));
         auth1.setProperty("username", username);
         byte[] authCipher = CryptoUtils.aesGcmEncrypt(pskKey, CryptoUtils.bytes(KvMessage.encode(auth1)));
         out.println("AUTH1|" + username + "|" + CryptoUtils.b64(authCipher));
-
+        //check if the server verified the customer
         String authOk = in.readLine();
         String[] authParts = authOk.split("\\|", -1);
         if (!"AUTH_OK".equals(authParts[0])) {
             log("Authentication failed: " + authOk);
             return;
         }
+        //now atm must verify the server
         String decrypted = CryptoUtils.utf8(CryptoUtils.aesGcmDecrypt(pskKey, CryptoUtils.unb64(authParts[1])));
         Properties auth2 = KvMessage.decode(decrypted);
-        if (!nonceC.equals(auth2.getProperty("nonceC"))) {
+        //double check server nonce
+        if (!(nonceC.equals(auth2.getProperty("nonceC")) && nonceS.equals(auth2.getProperty("nonceS")))) {
             throw new IllegalStateException("Server authentication failed. NonceC mismatch.");
         }
         byte[] serverRandom = CryptoUtils.unb64(auth2.getProperty("serverRandom"));

@@ -2,6 +2,8 @@ package UI_Bank;
 
 import Server_Client.BankServer;
 import java.awt.BorderLayout;
+import java.util.Map;
+import javax.crypto.SecretKey;
 import javax.swing.JButton;
 import javax.swing.JFrame;
 import javax.swing.JPanel;
@@ -12,8 +14,10 @@ import javax.swing.SwingUtilities;
 public class ServerFrame extends JFrame {
     private final JTextArea logArea = new JTextArea();
     private BankServer bankServer;
-
-    public ServerFrame() {
+    private final Map<String, SecretKey> preKeys;
+    
+    public ServerFrame(Map<String, SecretKey> preKeys) {
+        this.preKeys = preKeys;
         super("Bank Server Console");
         setSize(800, 550);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);

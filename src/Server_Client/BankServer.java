@@ -7,12 +7,15 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Path;
 import java.security.KeyPair;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import javax.crypto.SecretKey;
 
 public class BankServer {
     public static final int DEFAULT_PORT = 5050;
     private final int port;
+    private final Map<String, SecretKey> preKeys;
     private final KeyPair rsaKeyPair;
     private final BankDatabase database;
     private final AuditLogger auditLogger;
@@ -20,14 +23,19 @@ public class BankServer {
     private final ServerFrame serverFrame;
     private volatile boolean running;
 
-    public BankServer(int port, ServerFrame serverFrame) throws Exception {
+    public BankServer(int port, ServerFrame serverFrame, Map<String, SecretKey> preKeys) throws Exception {
         this.port = port;
         this.serverFrame = serverFrame;
         this.rsaKeyPair = CryptoUtils.generateRSAKeyPair();
         this.database = new BankDatabase(Path.of("users.db"));
         this.auditLogger = new AuditLogger(Path.of("audit.key"), Path.of("audit.log.enc"));
+        this.preKeys = preKeys;
     }
 
+    public SecretKey getPreKey(String atmId){
+        return preKeys.get(atmId);
+    }
+    
     public void start() {
         if (running) {
             log("Server already running.");

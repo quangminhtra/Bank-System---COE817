@@ -1,25 +1,27 @@
 package Server_Client;
 
-import CryptoLogic.CryptoUtils;
 import Bank_model.TransactionResult;
 import Bank_model.UserRecord;
+import CryptoLogic.CryptoUtils;
 import CryptoLogic.KvMessage;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
 import java.net.Socket;
-import java.security.PublicKey;
+import java.util.Map;
 import java.util.Properties;
 import javax.crypto.SecretKey;
 
 public class ClientHandler implements Runnable {
     private final Socket socket;
     private final BankServer bankServer;
+    private SecretKey atmPreKey;
 
     public ClientHandler(Socket socket, BankServer bankServer) {
         this.socket = socket;
         this.bankServer = bankServer;
+        this.atmPreKey = null;
     }
 
     @Override
@@ -29,8 +31,7 @@ public class ClientHandler implements Runnable {
              PrintWriter out = new PrintWriter(new OutputStreamWriter(s.getOutputStream()), true)) {
 
             // Send server public key first --> the ATM use it for secure registration
-            out.println("SERVER_HELLO|" + CryptoUtils.encodePublicKey(bankServer.getRsaKeyPair().getPublic()));
-            PublicKey serverPublicKey = bankServer.getRsaKeyPair().getPublic();
+            out.println("SERVER_HELLO|");
 
             String atmId = "UNKNOWN-ATM";
             String line;
@@ -47,13 +48,14 @@ public class ClientHandler implements Runnable {
                     case "ATM_HELLO" -> {
                         // Store ATM identity for logging and handshake tracking.
                         atmId = parts.length > 1 ? parts[1] : "UNKNOWN-ATM";
+                        this.atmPreKey = this.bankServer.getPreKey(atmId);
                         bankServer.log("ATM connected: " + atmId);
                         out.println("ATM_HELLO_OK|" + atmId);
                     }
 
                     case "REGISTER" ->
                         // Registration uses RSA to protect username/password in transit
-                        handleRegister(parts, out, serverPublicKey, atmId);
+                        handleRegister(parts, out, atmId);
 
                     case "LOGIN_INIT" ->
                         // Start login by issuing salt, iteration count, and server nonce
@@ -85,7 +87,7 @@ public class ClientHandler implements Runnable {
         }
     }
 
-    private void handleRegister(String[] parts, PrintWriter out, PublicKey serverPublicKey, String atmId) throws Exception {
+    private void handleRegister(String[] parts, PrintWriter out, String atmId) throws Exception {
         if (parts.length < 2) {
             out.println("REGISTER_RESULT|ERROR|Malformed registration.");
             return;
@@ -93,7 +95,7 @@ public class ClientHandler implements Runnable {
 
         // Decrypt registration payload using Sever Pkey
         String decrypted = CryptoUtils.utf8(
-                CryptoUtils.rsaDecrypt(bankServer.getRsaKeyPair().getPrivate(), CryptoUtils.unb64(parts[1]))
+                CryptoUtils.aesGcmDecrypt(atmPreKey, CryptoUtils.bytes(parts[1]))
         );
 
         // Decode username and password 
@@ -166,6 +168,7 @@ public class ClientHandler implements Runnable {
             return null;
         }
 
+        //We're all good now, the client has verified the server, let's verify the ATM
         String nonceC = p.getProperty("nonceC", "");
         String clientRandomB64 = p.getProperty("clientRandom", "");
         byte[] clientRandom = CryptoUtils.unb64(clientRandomB64);
@@ -191,6 +194,7 @@ public class ClientHandler implements Runnable {
         // Send server proof back to the ATM
         Properties response = new Properties();
         response.setProperty("nonceC", nonceC);
+        response.setProperty("nonceS", nonceS);
         response.setProperty("serverRandom", CryptoUtils.b64(serverRandom));
         response.setProperty("message", "Authenticated");
 
@@ -298,4 +302,3 @@ public class ClientHandler implements Runnable {
             MAP.remove(key);
         }
     }
-}
