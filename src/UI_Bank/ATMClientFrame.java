@@ -165,7 +165,6 @@ public class ATMClientFrame extends JFrame {
         auth1.setProperty("clientRandom", CryptoUtils.b64(clientRandom));
         auth1.setProperty("username", username);
         auth1.setProperty("pswd", CryptoUtils.b64(CryptoUtils.pbkdf2(password.toCharArray(), salt, iterations, 32)));
-        log("Going to send psk: " + auth1.get("pswd"));
         byte[] authCipher = CryptoUtils.aesGcmEncrypt(preshared, CryptoUtils.bytes(KvMessage.encode(auth1)));
         out.println("AUTH1|" + CryptoUtils.b64(authCipher));
         //check if the server verified the customer
